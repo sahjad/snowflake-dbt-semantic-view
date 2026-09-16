@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: tasty_bytes_raw
+    database: TASTY_BYTES_DB
+    schema: raw
+    tables:
+      - name: order_header
+      - name: order_detail
+      - name: menu
+      - name: truck
+      - name: location
+      - name: customer_loyalty

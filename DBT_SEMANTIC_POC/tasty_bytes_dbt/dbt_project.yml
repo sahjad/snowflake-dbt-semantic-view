@@ -1,0 +1,19 @@
+name: 'tasty_bytes_semantic_demo'
+version: '1.0.0'
+config-version: 2
+
+# Note: profiles.yml (in this same folder) specifies the target
+# warehouse/database/schema/role. Unlike local dbt Core, you don't need
+# real account/user credentials there -- the project runs under your
+# current Snowflake session automatically -- but the profile file itself
+# is still required.
+profile: 'tasty_bytes_semantic_demo'
+
+model-paths: ["models"]
+
+models:
+  tasty_bytes_semantic_demo:
+    staging:
+      +materialized: view
+    gold:
+      +materialized: table
