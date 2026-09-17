@@ -71,3 +71,27 @@ SELECT item_category, location_city, AGG(total_revenue) AS revenue
 FROM TASTY_BYTES_DB.dev.tasty_bytes_semantic_view
 GROUP BY item_category, location_city
 ORDER BY revenue DESC;
+
+
+
+-- Matches its YTD 2022 vs YTD 2021 comparison
+SELECT 
+    m.truck_brand_name,
+    SUM(CASE WHEN f.order_ts BETWEEN '2022-01-01' AND '2022-11-01' THEN f.line_total ELSE 0 END) AS ytd_2022,
+    SUM(CASE WHEN f.order_ts BETWEEN '2021-01-01' AND '2021-11-01' THEN f.line_total ELSE 0 END) AS prior_ytd_2021
+FROM TASTY_BYTES_DB.dev.fct_order_detail f
+JOIN TASTY_BYTES_DB.dev.dim_menu m ON f.menu_item_id = m.menu_item_id
+WHERE m.truck_brand_name IN ('Kitakata Ramen Bar', 'Nani''s Kitchen', 'Cheeky Greek', 'Smoky BBQ', 'Le Coin des Crêpes')
+GROUP BY m.truck_brand_name
+ORDER BY ytd_2022 DESC;
+
+-- Matches its "30-day rolling average" (Oct 3 -- Nov 1, 2022)
+SELECT 
+    m.truck_brand_name,
+    SUM(f.line_total) / 30.0 AS avg_daily_revenue_last_30_days
+FROM TASTY_BYTES_DB.dev.fct_order_detail f
+JOIN TASTY_BYTES_DB.dev.dim_menu m ON f.menu_item_id = m.menu_item_id
+WHERE f.order_ts BETWEEN '2022-10-03' AND '2022-11-01'
+  AND m.truck_brand_name IN ('Kitakata Ramen Bar', 'Nani''s Kitchen', 'Cheeky Greek', 'Smoky BBQ', 'Le Coin des Crêpes')
+GROUP BY m.truck_brand_name
+ORDER BY avg_daily_revenue_last_30_days DESC;

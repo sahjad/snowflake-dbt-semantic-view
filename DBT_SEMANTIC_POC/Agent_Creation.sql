@@ -10,7 +10,7 @@ USE DATABASE TASTY_BYTES_DB;
 USE SCHEMA dev;
 
 CREATE OR REPLACE AGENT tasty_bytes_agent
-  COMMENT = 'Answers questions about Tasty Bytes sales: revenue, orders, quantity sold, by truck brand, menu category, city, region, and customer loyalty status'
+  COMMENT = 'Answers questions about Tasty Bytes sales and profitability: revenue, orders, quantity sold, cost of goods, gross profit, and margin, by truck brand, menu category, city, region, and customer loyalty status'
   PROFILE = '{"display_name": "Tasty Bytes Sales Assistant", "color": "orange"}'
   FROM SPECIFICATION
   $$
@@ -19,21 +19,32 @@ CREATE OR REPLACE AGENT tasty_bytes_agent
 
   instructions:
     response: "Respond concisely. Include the relevant numbers in your answer."
-    orchestration: "Use the tasty_bytes_analyst tool for any question about revenue, orders, quantity sold, truck brands, menu items, categories, cities, regions, or customer loyalty status."
+    orchestration: "Use the tasty_bytes_analyst tool for questions about revenue, orders, quantity sold, truck brands, menu items, categories, cities, regions, or customer loyalty status. Use the profitability_analyst tool for questions about cost of goods, gross profit, or profit margin."
     sample_questions:
+      - question: "Show me the YTD revenue and YoY growth for our top 5 truck brands, plus their 30-day rolling average revenue"
       - question: "What is our total revenue by truck brand?"
       - question: "How many orders came from loyalty members versus non-members?"
-      - question: "What is the average order value by city?"
+      - question: "What is our gross profit by truck brand?"
+      - question: "What is our profit margin percentage by menu category?"
 
   tools:
     - tool_spec:
         type: "cortex_analyst_text_to_sql"
         name: "tasty_bytes_analyst"
         description: "Answers questions about Tasty Bytes sales -- revenue, order counts, quantity sold, average order value -- broken down by truck brand, menu category, city, region, order channel, or customer loyalty status."
+    - tool_spec:
+        type: "cortex_analyst_text_to_sql"
+        name: "profitability_analyst"
+        description: "Answers questions about Tasty Bytes profitability -- cost of goods, gross profit, and profit margin -- broken down by truck brand, menu category, or menu item."
 
   tool_resources:
     tasty_bytes_analyst:
       semantic_view: "TASTY_BYTES_DB.dev.tasty_bytes_semantic_view"
+      execution_environment:
+        type: warehouse
+        warehouse: TASTY_BYTES_WH
+    profitability_analyst:
+      semantic_view: "TASTY_BYTES_DB.dev.tasty_bytes_profitability_semantic_view"
       execution_environment:
         type: warehouse
         warehouse: TASTY_BYTES_WH
