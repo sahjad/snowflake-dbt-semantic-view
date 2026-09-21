@@ -51,22 +51,34 @@ DIMENSIONS (
 )
 
 METRICS (
-    fct_order_detail.total_revenue       AS SUM(fct_order_detail.line_total),
-    fct_order_detail.total_orders        AS COUNT(DISTINCT fct_order_detail.order_id),
-    fct_order_detail.total_quantity_sold AS SUM(fct_order_detail.quantity)
+    fct_order_detail.total_revenue       AS SUM(fct_order_detail.line_total_fact),
+    fct_order_detail.total_orders        AS COUNT(DISTINCT fct_order_detail.order_id_fact),
+    fct_order_detail.total_quantity_sold AS SUM(fct_order_detail.quantity_fact)
 )
 
 AI_VERIFIED_QUERIES (
     revenue_by_truck_brand AS (
         QUESTION 'What is our total revenue by truck brand?'
-        SQL 'SELECT truck_brand_name, AGG(total_revenue) AS total_revenue FROM tasty_bytes_semantic_view GROUP BY truck_brand_name ORDER BY total_revenue DESC'
+        SQL 'SELECT dim_menu.truck_brand_name, SUM(fct_order_detail.line_total_fact) AS total_revenue
+             FROM fct_order_detail
+             JOIN dim_menu ON fct_order_detail.menu_item_id = dim_menu.menu_item_id
+             GROUP BY dim_menu.truck_brand_name ORDER BY total_revenue DESC'
     ),
     orders_loyalty_vs_nonmember AS (
         QUESTION 'How many orders came from loyalty members versus non-members?'
-        SQL 'SELECT CASE WHEN customer_city IS NULL THEN ''Non-Member'' ELSE ''Loyalty Member'' END AS customer_type, AGG(total_orders) AS order_count FROM tasty_bytes_semantic_view GROUP BY customer_type'
+        SQL 'SELECT CASE WHEN dim_customer_loyalty.customer_city IS NULL THEN ''Non-Member''
+                          ELSE ''Loyalty Member'' END AS customer_type,
+                    COUNT(DISTINCT fct_order_detail.order_id_fact) AS order_count
+             FROM fct_order_detail
+             LEFT JOIN dim_customer_loyalty ON fct_order_detail.customer_id = dim_customer_loyalty.customer_id
+             GROUP BY customer_type'
     ),
     avg_order_value_by_city AS (
         QUESTION 'What is the average order value by city?'
-        SQL 'SELECT location_city, AGG(total_revenue) / AGG(total_orders) AS avg_order_value FROM tasty_bytes_semantic_view GROUP BY location_city ORDER BY avg_order_value DESC'
+        SQL 'SELECT dim_location.location_city,
+                    SUM(fct_order_detail.line_total_fact) / COUNT(DISTINCT fct_order_detail.order_id_fact) AS avg_order_value
+             FROM fct_order_detail
+             JOIN dim_location ON fct_order_detail.location_id = dim_location.location_id
+             GROUP BY dim_location.location_city ORDER BY avg_order_value DESC'
     )
 )

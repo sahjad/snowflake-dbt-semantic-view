@@ -53,39 +53,43 @@ METRICS (
     -- Revenue included here too (not just in the sales view) so margin
     -- can be computed within this one view, without cross-referencing
     -- the other semantic view.
-    fct_order_detail.total_revenue AS SUM(fct_order_detail.line_total),
+    fct_order_detail.total_revenue AS SUM(fct_order_detail.line_total_fact),
 
     -- New: actual cost realized against what was actually sold --
     -- quantity sold times each item's catalog cost, summed at the
     -- line-item level (not just a catalog-level number).
-    fct_order_detail.total_cost AS SUM(fct_order_detail.quantity * dim_menu.cost_of_goods_fact),
+    fct_order_detail.total_cost AS SUM(fct_order_detail.quantity_fact * dim_menu.cost_of_goods_fact),
 
     -- New: the metric this whole view exists for. Realized gross profit,
     -- computed per line item (revenue minus cost for that line) then
     -- summed -- not catalog margin, actual margin on what was sold.
     fct_order_detail.gross_profit AS SUM(
-        fct_order_detail.line_total - (fct_order_detail.quantity * dim_menu.cost_of_goods_fact)
+        fct_order_detail.line_total_fact - (fct_order_detail.quantity_fact * dim_menu.cost_of_goods_fact)
     )
 )
 
 AI_VERIFIED_QUERIES (
     gross_profit_by_truck_brand AS (
         QUESTION 'What is our gross profit by truck brand?'
-        SQL 'SELECT truck_brand_name, AGG(gross_profit) AS gross_profit
-             FROM tasty_bytes_profitability_semantic_view
-             GROUP BY truck_brand_name ORDER BY gross_profit DESC'
+        SQL 'SELECT dim_menu.truck_brand_name,
+                    SUM(fct_order_detail.line_total_fact - (fct_order_detail.quantity_fact * dim_menu.cost_of_goods_fact)) AS gross_profit
+             FROM fct_order_detail
+             JOIN dim_menu ON fct_order_detail.menu_item_id = dim_menu.menu_item_id
+             GROUP BY dim_menu.truck_brand_name ORDER BY gross_profit DESC'
     ),
     profit_margin_by_category AS (
         QUESTION 'What is our profit margin percentage by menu category?'
-        SQL 'SELECT item_category,
-                    AGG(gross_profit) / AGG(total_revenue) * 100 AS profit_margin_pct
-             FROM tasty_bytes_profitability_semantic_view
-             GROUP BY item_category ORDER BY profit_margin_pct DESC'
+        SQL 'SELECT dim_menu.item_category,
+                    SUM(fct_order_detail.line_total_fact - (fct_order_detail.quantity_fact * dim_menu.cost_of_goods_fact))
+                        / SUM(fct_order_detail.line_total_fact) * 100 AS profit_margin_pct
+             FROM fct_order_detail
+             JOIN dim_menu ON fct_order_detail.menu_item_id = dim_menu.menu_item_id
+             GROUP BY dim_menu.item_category ORDER BY profit_margin_pct DESC'
     ),
     highest_cost_menu_items AS (
         QUESTION 'Which menu items have the highest cost of goods?'
-        SQL 'SELECT menu_item_name, AVG(cost_of_goods_fact) AS avg_cost
-             FROM tasty_bytes_profitability_semantic_view
-             GROUP BY menu_item_name ORDER BY avg_cost DESC'
+        SQL 'SELECT dim_menu.menu_item_name, AVG(dim_menu.cost_of_goods_fact) AS avg_cost
+             FROM dim_menu
+             GROUP BY dim_menu.menu_item_name ORDER BY avg_cost DESC'
     )
 )
