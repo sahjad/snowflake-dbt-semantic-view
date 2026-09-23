@@ -95,3 +95,27 @@ WHERE f.order_ts BETWEEN '2022-10-03' AND '2022-11-01'
   AND m.truck_brand_name IN ('Kitakata Ramen Bar', 'Nani''s Kitchen', 'Cheeky Greek', 'Smoky BBQ', 'Le Coin des Crêpes')
 GROUP BY m.truck_brand_name
 ORDER BY avg_daily_revenue_last_30_days DESC;
+
+SHOW SEMANTIC VIEWS IN SCHEMA TASTY_BYTES_DB.dev;
+
+SELECT dim_menu.truck_brand_name, AGG(fct_order_detail.total_revenue) AS total_revenue
+FROM TASTY_BYTES_DB.dev.tasty_bytes_truck_menu_yaml_demo
+GROUP BY dim_menu.truck_brand_name;
+
+
+LIST @TASTY_BYTES_DB.SEMANTIC_TOOL.TMP_WS_WRITE;
+
+
+
+GRANT WRITE ON WORKSPACE "USER$<their_own_username>".PUBLIC."snowflake-dbt-semantic-view" TO ROLE <their_active_role>;
+GRANT WRITE ON WORKSPACE "USER$SAHJAD".PUBLIC."snowflake-dbt-semantic-view" TO ROLE ACCOUNTADMIN;
+
+
+CREATE DBT PROJECT TASTY_BYTES_DB.SEMANTIC_TOOL.tasty_bytes_dbt_deploy
+FROM 'snow://workspace/"USER$SAHJAD".PUBLIC."snowflake-dbt-semantic-view"/versions/live/DBT_SEMANTIC_POC/tasty_bytes_dbt';
+
+
+
+
+EXECUTE DBT PROJECT TASTY_BYTES_DB.SEMANTIC_TOOL.tasty_bytes_dbt_deploy
+  ARGS = 'run --target dev --select models/semantic_view/customer_loyalty_insights.sql';
