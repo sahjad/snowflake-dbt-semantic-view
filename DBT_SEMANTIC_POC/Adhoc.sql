@@ -103,6 +103,9 @@ FROM TASTY_BYTES_DB.dev.tasty_bytes_truck_menu_yaml_demo
 GROUP BY dim_menu.truck_brand_name;
 
 
+
+SELECT CURRENT_USER();
+
 LIST @TASTY_BYTES_DB.SEMANTIC_TOOL.TMP_WS_WRITE;
 
 

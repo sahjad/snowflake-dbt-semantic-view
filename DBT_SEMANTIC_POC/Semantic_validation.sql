@@ -313,4 +313,37 @@ SET owner = 'SAHJAD'
 WHERE owner LIKE 'STPLATSTREAMLIT%';
 
 
-SELECT CURRENT_USER();
+
+-- DROP CUSTOMER LOYALTY INSIGHTS
+
+DROP SEMANTIC VIEW IF EXISTS TASTY_BYTES_DB.dev.customer_loyalty_insights;
+-- only if you also deployed to prod during testing:
+DROP SEMANTIC VIEW IF EXISTS TASTY_BYTES_DB.prod.customer_loyalty_insights;
+
+
+USE SCHEMA TASTY_BYTES_DB.SEMANTIC_TOOL;
+
+DELETE FROM svt_builder_verified_queries WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_builder_relationships WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_builder_metrics WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_builder_facts WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_builder_dimensions WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_builder_tables WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_deployment_log WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_versions WHERE proposal_id IN
+    (SELECT proposal_id FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS');
+DELETE FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS';
+
+
+SELECT * FROM svt_proposals WHERE view_name = 'CUSTOMER_LOYALTY_INSIGHTS';
+-- should return 0 rows
+
+select * from svt_deployment_log;
+

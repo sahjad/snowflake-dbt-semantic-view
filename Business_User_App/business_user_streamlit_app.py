@@ -117,6 +117,97 @@ def fmt_with_comment(comments_dict):
     return lambda x: f"{x} — {comments_dict.get(x) or 'no description set'}"
 
 
+COMMON_PREFIXES = ("DIM_", "FCT_", "STG_")
+
+
+def suggest_primary_key(db, schema, table, columns):
+    """Best-effort primary key guess, in order of confidence. Always just a
+    suggestion the business user confirms or overrides -- never applied
+    silently -- since a wrong guess baked in unreviewed is worse than no
+    guess at all.
+
+    1. A real declared constraint, if one exists (most of our own Gold
+       tables won't have one -- they were built as plain SELECTs -- but
+       this is checked first in case a table does).
+    2. An exact match: strip a common prefix (DIM_/FCT_/STG_) from the
+       table name and look for "<stripped>_ID" among its columns -- this
+       resolves even multi-key tables like FCT_ORDER_DETAIL correctly.
+    3. If exactly one column ends in "_ID", use it -- true for every one
+       of our dimension tables.
+    4. Otherwise, no suggestion -- leave it for manual selection.
+    """
+    try:
+        rows = session.sql(f"SHOW PRIMARY KEYS IN TABLE {db}.{schema}.{table}").collect()
+        if rows:
+            cols = [_row_get(r.as_dict(), "column_name") for r in rows]
+            if cols:
+                return cols
+    except Exception:
+        pass
+
+    stripped = table.upper()
+    for p in COMMON_PREFIXES:
+        if stripped.startswith(p):
+            stripped = stripped[len(p):]
+            break
+    exact = f"{stripped}_ID"
+    if exact in [c.upper() for c in columns]:
+        match = next(c for c in columns if c.upper() == exact)
+        return [match]
+
+    id_cols = [c for c in columns if c.upper().endswith("_ID")]
+    if len(id_cols) == 1:
+        return id_cols
+
+    return []
+
+
+def suggest_relationships(bt_df):
+    """Auto-suggest relationships between already-added tables.
+
+    For each pair, look for a column name appearing in both tables' full
+    column lists. A suggestion is only made when that column is the
+    primary key of exactly one side -- that's what makes the direction
+    unambiguous (parent = whichever table it's a key on). If it's a key
+    on both sides, or neither, it's genuinely ambiguous and is skipped
+    rather than guessed -- left for the manual relationship form instead.
+    """
+    suggestions = []
+    rows = list(bt_df.iterrows())
+    for i in range(len(rows)):
+        for j in range(len(rows)):
+            if i == j:
+                continue
+            _, a = rows[i]
+            _, b = rows[j]
+            a_cols, _ = get_columns(a["PHYSICAL_DATABASE"], a["PHYSICAL_SCHEMA"], a["PHYSICAL_TABLE"])
+            b_cols, _ = get_columns(b["PHYSICAL_DATABASE"], b["PHYSICAL_SCHEMA"], b["PHYSICAL_TABLE"])
+            a_pk = [c.strip().upper() for c in (a["PRIMARY_KEY_COLS"] or "").split(",") if c.strip()]
+            b_pk = [c.strip().upper() for c in (b["PRIMARY_KEY_COLS"] or "").split(",") if c.strip()]
+
+            shared = set(c.upper() for c in a_cols) & set(c.upper() for c in b_cols)
+            for col in shared:
+                a_is_pk = col in a_pk
+                b_is_pk = col in b_pk
+                if a_is_pk and not b_is_pk:
+                    # a is the parent (one side), b references it (many side)
+                    real_col_a = next(c for c in a_cols if c.upper() == col)
+                    real_col_b = next(c for c in b_cols if c.upper() == col)
+                    suggestions.append({
+                        "left_table": b["TABLE_ALIAS"], "right_table": a["TABLE_ALIAS"],
+                        "left_column": real_col_b, "right_column": real_col_a,
+                    })
+    # de-duplicate (each true pair gets found from both directions of the i/j loop)
+    seen = set()
+    unique = []
+    for s in suggestions:
+        key = (s["left_table"], s["right_table"], s["left_column"], s["right_column"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(s)
+    return unique
+
+
 def touch_proposal(pid):
     run(f"UPDATE {TOOL_PATH}.svt_proposals SET updated_at = CURRENT_TIMESTAMP() "
         f"WHERE proposal_id = '{esc(pid)}'")
@@ -242,8 +333,18 @@ st.sidebar.divider()
 # After creating a proposal, land straight in it rather than leaving the
 # user on a form they've already finished with.
 jump_pid = st.session_state.pop("jump_to_pid", None)
+
+# Streamlit won't allow setting a widget's own session_state key AFTER
+# that widget has already rendered in the same run -- even right before
+# a rerun. So the button handlers below set a plain flag instead, and
+# it's only applied to the radio's actual key here, before the radio
+# widget is instantiated for this run.
+forced_mode = st.session_state.pop("force_mode_next_run", None)
+if forced_mode:
+    st.session_state["mode_radio"] = forced_mode
+
 mode_options = ["My proposals", "Start a new view", "Change a live view"]
-mode = st.sidebar.radio("Mode", mode_options, index=0)
+mode = st.sidebar.radio("Mode", mode_options, index=0, key="mode_radio")
 
 active_pid = None
 
@@ -265,7 +366,8 @@ if mode == "My proposals":
         # After creating a proposal, jump_pid selects it instead.
         default_idx = ids.index(jump_pid) if jump_pid in ids else 0
         picked = st.sidebar.selectbox(
-            "Open proposal", ids, index=default_idx, format_func=lambda x: labels[x]
+            "Open proposal", ids, index=default_idx, format_func=lambda x: labels[x],
+            key="open_proposal_select",
         )
         active_pid = None if picked == NONE_SENTINEL else picked
 
@@ -293,6 +395,7 @@ elif mode == "Start a new view":
                         VALUES ('{vid}', '{pid}', 1, '', '{esc(user)}', TRUE)""")
                 st.sidebar.success(f"Draft created: {nv_name}")
                 st.session_state["jump_to_pid"] = pid
+                st.session_state["force_mode_next_run"] = "My proposals"
                 st.rerun()
 
 else:
@@ -334,6 +437,7 @@ else:
                         VALUES ('{vid}', '{pid}', 1, '', '{esc(user)}', TRUE)""")
                 st.sidebar.success(f"Update proposal created for {up_view}")
                 st.session_state["jump_to_pid"] = pid
+                st.session_state["force_mode_next_run"] = "My proposals"
                 st.rerun()
 
 
@@ -459,7 +563,7 @@ def start_new_version_if_needed():
 
 
 tabs = st.tabs([
-    "1. Tables", "2. Dimensions", "3. Facts",
+    "Info", "1. Tables", "2. Dimensions", "3. Facts",
     "4. Metrics", "5. Relationships", "6. Review & submit"
 ])
 
@@ -477,9 +581,42 @@ def delete_button(table, item_id, label, key):
         st.rerun()
 
 
-# ---------------- TAB 1: TABLES ----------------
+# ---------------- TAB 0: INFO ----------------
 with tabs[0]:
-    st.subheader("Logical tables")
+    st.subheader("How this works")
+    st.markdown("""
+Building a proposal has six steps. Work through them in order, using the
+tabs above:
+
+1. **Tables** — Choose the data tables that hold what you need, and give
+   each one a short name you'll use in every step below.
+2. **Dimensions** — Pick the categories you'll want to group or filter
+   by later — things like city, category, or brand.
+3. **Facts** — Pick the raw numbers behind your data — quantity, price,
+   amount. These aren't calculations yet, just the building blocks.
+4. **Metrics** — Combine your facts into the actual numbers you want to
+   see — total revenue, average order value, and so on.
+5. **Relationships** — Tell us how your tables connect to each other.
+   Once you've added at least two tables, we'll suggest likely
+   connections automatically — you can accept or dismiss each one, or
+   add your own.
+6. **Review & submit** — Check everything looks right, then send it to
+   a data engineer for review.
+
+**What happens after you submit?** A data engineer reviews your
+proposal. They may approve it, send it back with notes for you to fix,
+or reject it — you'll see the status update in **My Submissions**, and
+any notes will show right here when you reopen the proposal.
+    """)
+
+
+# ---------------- TAB 1: TABLES ----------------
+with tabs[1]:
+    st.subheader("Tables")
+    st.caption(
+        "Choose the tables that hold the data for this view, and give each "
+        "one a name you'll use everywhere else in this proposal."
+    )
 
     with st.expander("Browse table descriptions"):
         b_db = st.selectbox("Database", get_databases(), key="br_db")
@@ -493,20 +630,38 @@ with tabs[0]:
 
     if editable or status == "VALIDATED":
         col1, col2 = st.columns(2)
-        t_db = col1.selectbox("Database", get_databases(), key="t_db")
-        t_sc = col2.selectbox("Schema", get_schemas(t_db) if t_db else [], key="t_sc")
+        t_db = col1.selectbox("Database", get_databases(), key="t_db",
+                              help="Where the data lives in Snowflake")
+        t_sc = col2.selectbox("Schema", get_schemas(t_db) if t_db else [], key="t_sc",
+                              help="A folder inside the database")
         t_names, t_comments = get_tables(t_db, t_sc) if t_sc else ([], {})
         t_tbl = st.selectbox(
-            "Physical table", t_names,
+            "Select the table you want to add", t_names,
             format_func=fmt_with_comment(t_comments) if t_names else (lambda x: x),
             key="t_tbl"
         )
         t_cols, t_meta = get_columns(t_db, t_sc, t_tbl) if t_tbl else ([], {})
 
+        pk_suggestion = suggest_primary_key(t_db, t_sc, t_tbl, t_cols) if t_tbl else []
+        if pk_suggestion:
+            st.caption(f"Suggested unique ID column: **{', '.join(pk_suggestion)}** -- remove it below if this isn't right.")
+        elif t_tbl:
+            st.caption("Couldn't guess a unique ID column for this table -- please choose one below.")
+
         with st.form("add_table"):
-            alias = st.text_input("Logical name", t_tbl.upper() if t_tbl else "")
-            pk = st.multiselect("Primary key column(s)", t_cols)
-            tdesc = st.text_area("What does this table represent?")
+            alias = st.text_input(
+                "Short name for this table (used everywhere else below)",
+                t_tbl.upper() if t_tbl else "",
+                help="This is how you'll refer to this table in Dimensions, Facts, Metrics, and Relationships"
+            )
+            pk = st.multiselect(
+                "Unique ID column(s) for this table (Primary Key)", t_cols, default=pk_suggestion,
+                help="The column (or columns) that uniquely identify one row -- e.g. an ID"
+            )
+            tdesc = st.text_area(
+                "What does this table represent?",
+                key=f"tdesc_{t_db}_{t_sc}_{t_tbl}"
+            )
             if st.form_submit_button("Add table") and alias and t_tbl:
                 if alias in aliases:
                     st.error(f"{alias} is already added.")
@@ -585,14 +740,15 @@ with tabs[0]:
 
 
 # ---------------- TAB 2: DIMENSIONS ----------------
-with tabs[1]:
+with tabs[2]:
     st.subheader("Dimensions")
     st.caption("Attributes you group or filter by — category, region, name, date.")
 
     if not aliases:
         st.info("Add a table first.")
     else:
-        sel = st.selectbox("Table", aliases, key="d_tbl")
+        sel = st.selectbox("Table", aliases, key="d_tbl",
+                           help="Which table this attribute comes from")
         row = bt[bt["TABLE_ALIAS"] == sel].iloc[0]
         cols, meta = get_columns(row["PHYSICAL_DATABASE"], row["PHYSICAL_SCHEMA"], row["PHYSICAL_TABLE"])
 
@@ -600,7 +756,7 @@ with tabs[1]:
         # and inside a form it would lag one interaction behind -- silently
         # storing the wrong type.
         dcol = st.selectbox(
-            "Physical column", cols,
+            "Select the column you want to use", cols,
             format_func=fmt_with_comment(meta.get("comments", {})) if cols else (lambda x: x),
             key="d_col",
         )
@@ -608,10 +764,15 @@ with tabs[1]:
             st.caption(f"Type: `{meta.get('types', {}).get(dcol, 'unknown')}`")
 
         with st.form("add_dim"):
-            dname = st.text_input("Dimension name (business-friendly)").strip()
-            ddesc = st.text_area("Description")
+            dname = st.text_input(
+                "Name for this dimension",
+                help="What you'll call this when grouping or filtering",
+                key=f"dname_{sel}_{dcol}"
+            ).strip()
+            ddesc = st.text_area("Description", key=f"ddesc_{sel}_{dcol}")
             dsyn = st.text_input("Synonyms (comma-separated, optional)",
-                                 help="Other words people use for this, e.g. 'sales, turnover'")
+                                 help="Other words people use for this, e.g. 'sales, turnover'",
+                                 key=f"dsyn_{sel}_{dcol}")
             if st.form_submit_button("Add dimension") and dname and dcol:
                 if start_new_version_if_needed():
                     st.info("Created a new version for this change.")
@@ -639,33 +800,36 @@ with tabs[1]:
 
 
 # ---------------- TAB 3: FACTS ----------------
-with tabs[2]:
+with tabs[3]:
     st.subheader("Facts")
     st.caption(
-        "Row-level numeric values — quantity, price, amount. "
-        "The `_fact` suffix is recommended: it keeps names unambiguous when "
-        "metrics reference columns across joined tables."
+        "Raw numbers behind this view -- quantity, price, amount -- that "
+        "get added up in Metrics next."
     )
 
     if not aliases:
         st.info("Add a table first.")
     else:
-        sel_f = st.selectbox("Table", aliases, key="f_tbl")
+        sel_f = st.selectbox("Table", aliases, key="f_tbl",
+                             help="Which table this number comes from")
         row_f = bt[bt["TABLE_ALIAS"] == sel_f].iloc[0]
         cols_f, meta_f = get_columns(row_f["PHYSICAL_DATABASE"], row_f["PHYSICAL_SCHEMA"], row_f["PHYSICAL_TABLE"])
 
         # Outside the form: the suggested fact name below depends on this,
         # so it has to refresh as soon as the column changes.
         fcol = st.selectbox(
-            "Physical column", cols_f,
+            "Select the column with the number you need", cols_f,
             format_func=fmt_with_comment(meta_f.get("comments", {})) if cols_f else (lambda x: x),
             key="f_col"
         )
 
         with st.form("add_fact"):
             default_name = f"{fcol.lower()}_fact" if fcol else ""
-            fname = st.text_input("Fact name", default_name).strip()
-            fdesc = st.text_area("Description", key="f_desc")
+            fname = st.text_input(
+                "Name for this number", default_name,
+                help="Kept unique automatically so it doesn't get confused with a similar column on another table"
+            ).strip()
+            fdesc = st.text_area("Description", key=f"fdesc_{sel_f}_{fcol}")
             if st.form_submit_button("Add fact") and fname and fcol:
                 if start_new_version_if_needed():
                     st.info("Created a new version for this change.")
@@ -717,9 +881,12 @@ with tabs[2]:
 
 
 # ---------------- TAB 4: METRICS ----------------
-with tabs[3]:
+with tabs[4]:
     st.subheader("Metrics")
-    st.caption("Aggregations built on facts — total revenue, order count, average value.")
+    st.caption(
+        "Combine your facts into the numbers you actually want to see -- "
+        "total revenue, average order value, and so on."
+    )
 
     if bf.empty:
         st.info("Add at least one fact first.")
@@ -727,18 +894,38 @@ with tabs[3]:
         sel_m = st.selectbox("Table", aliases, key="m_tbl")
         avail = bf[bf["TABLE_ALIAS"] == sel_m]["FACT_NAME"].tolist()
 
+        # A revision counter, bumped after every successful add. Keying
+        # fields by table alone wouldn't clear them between two adds from
+        # the SAME table -- bumping this on success forces a fresh set of
+        # widgets even when the table selection hasn't changed.
+        m_rev = st.session_state.get(f"metric_rev_{active_pid}_{sel_m}", 0)
+        mkey = lambda field: f"m_{field}_{sel_m}_{m_rev}"
+
         with st.form("add_metric"):
-            mname = st.text_input("Metric name").strip()
-            agg = st.selectbox("Aggregation", ["SUM", "AVG", "COUNT", "COUNT DISTINCT", "MIN", "MAX"])
-            tgt = st.selectbox("Fact to aggregate", avail) if avail else None
-            custom = st.text_input(
-                "Custom expression (optional — overrides the above)",
-                help="For ratios or multi-step calculations. Reference declared fact names."
+            mname = st.text_input(
+                "Name for this metric",
+                help="What you'll call this calculated number, e.g. total_revenue",
+                key=mkey("name")
+            ).strip()
+            agg = st.selectbox(
+                "How to combine the numbers",
+                ["— Select —", "SUM", "AVG", "COUNT", "COUNT DISTINCT", "MIN", "MAX"],
+                help="SUM adds them all up, AVG takes the average, COUNT counts rows",
+                key=mkey("agg")
             )
-            mdesc = st.text_area("Description", key="m_desc")
+            agg = None if agg == "— Select —" else agg
+            tgt_options = ["— Select —"] + avail
+            tgt = st.selectbox("Which number to use", tgt_options, key=mkey("tgt")) if avail else None
+            tgt = None if tgt == "— Select —" else tgt
+            custom = st.text_input(
+                "Custom formula (optional — overrides the above)",
+                help="For ratios or multi-step calculations. Reference the names you gave in Facts.",
+                key=mkey("custom")
+            )
+            mdesc = st.text_area("Description", key=mkey("desc"))
             if st.form_submit_button("Add metric") and mname:
-                if not custom and not tgt:
-                    st.error("Pick a fact or enter a custom expression.")
+                if not custom and not (agg and tgt):
+                    st.error("Pick both how to combine and which number, or enter a custom formula.")
                 else:
                     if start_new_version_if_needed():
                         st.info("Created a new version for this change.")
@@ -756,6 +943,7 @@ with tabs[3]:
                                     '{esc(mname)}', '{esc(agg_v)}', '{esc(tgt_v)}',
                                     '{esc(expr)}', '{esc(mdesc)}')""")
                     touch_proposal(active_pid)
+                    st.session_state[f"metric_rev_{active_pid}_{sel_m}"] = m_rev + 1
                     st.rerun()
 
     bm = df(f"SELECT * FROM {TOOL_PATH}.svt_builder_metrics WHERE proposal_id = '{esc(active_pid)}' ORDER BY created_at")
@@ -772,16 +960,65 @@ with tabs[3]:
 
 
 # ---------------- TAB 5: RELATIONSHIPS ----------------
-with tabs[4]:
+with tabs[5]:
     st.subheader("Relationships")
-    st.caption("How tables join. Left = the 'many' side (usually the fact table).")
+    st.caption(
+        "Relationships tell us how your tables connect to each other. "
+        "Left = the table with many rows per match (usually your main "
+        "table); Right = the table with one matching row (usually a "
+        "reference table like customers or products)."
+    )
 
     if len(aliases) < 2:
         st.info("Add at least two tables first.")
     else:
+        br_existing = df(f"""SELECT left_table, right_table, left_column, right_column
+                             FROM {TOOL_PATH}.svt_builder_relationships
+                             WHERE proposal_id = '{esc(active_pid)}'""")
+        existing_keys = set(
+            (r["LEFT_TABLE"], r["RIGHT_TABLE"], r["LEFT_COLUMN"], r["RIGHT_COLUMN"])
+            for _, r in br_existing.iterrows()
+        ) if not br_existing.empty else set()
+        dismissed = st.session_state.get(f"rel_dismissed_{active_pid}", set())
+
+        raw_suggestions = suggest_relationships(bt)
+        pending = [
+            s for s in raw_suggestions
+            if (s["left_table"], s["right_table"], s["left_column"], s["right_column"])
+               not in existing_keys
+            and (s["left_table"], s["right_table"], s["left_column"], s["right_column"])
+               not in dismissed
+        ]
+
+        if pending:
+            st.write("**Suggested, based on matching column names:**")
+            for i, s in enumerate(pending):
+                key = (s["left_table"], s["right_table"], s["left_column"], s["right_column"])
+                a, b, c = st.columns([5, 1, 1])
+                a.markdown(f"`{s['left_table']}.{s['left_column']}`  →  `{s['right_table']}.{s['right_column']}`")
+                if b.button("Add", key=f"rel_add_{i}"):
+                    if start_new_version_if_needed():
+                        st.info("Created a new version for this change.")
+                    rname = f"{s['left_table']}_to_{s['right_table']}".lower()
+                    run(f"""INSERT INTO {TOOL_PATH}.svt_builder_relationships
+                            (item_id, proposal_id, relationship_name, left_table,
+                             right_table, left_column, right_column, relationship_type)
+                            VALUES ('{new_id()}', '{esc(active_pid)}', '{esc(rname)}',
+                                    '{esc(s["left_table"])}', '{esc(s["right_table"])}',
+                                    '{esc(s["left_column"])}', '{esc(s["right_column"])}',
+                                    'many_to_one')""")
+                    touch_proposal(active_pid)
+                    st.rerun()
+                if c.button("Dismiss", key=f"rel_dismiss_{i}"):
+                    dismissed = dismissed | {key}
+                    st.session_state[f"rel_dismissed_{active_pid}"] = dismissed
+                    st.rerun()
+            st.divider()
+
+        st.write("**Add one manually:**")
         col_l, col_r = st.columns(2)
-        lt = col_l.selectbox("Left (child) table", aliases, key="r_lt")
-        rt = col_r.selectbox("Right (parent) table", aliases, key="r_rt")
+        lt = col_l.selectbox("Left table (the many side)", aliases, key="r_lt")
+        rt = col_r.selectbox("Right table (the one side)", aliases, key="r_rt")
 
         lrow = bt[bt["TABLE_ALIAS"] == lt].iloc[0]
         rrow = bt[bt["TABLE_ALIAS"] == rt].iloc[0]
@@ -789,19 +1026,20 @@ with tabs[4]:
         rcols, rmeta = get_columns(rrow["PHYSICAL_DATABASE"], rrow["PHYSICAL_SCHEMA"], rrow["PHYSICAL_TABLE"])
 
         lc = st.selectbox(
-            "Left (foreign key) column", lcols,
+            "Matching column on the left table", lcols,
             format_func=fmt_with_comment(lmeta.get("comments", {})) if lcols else (lambda x: x),
             key="r_lc",
         )
         rc = st.selectbox(
-            "Right (primary key) column", rcols,
+            "Matching column on the right table", rcols,
             format_func=fmt_with_comment(rmeta.get("comments", {})) if rcols else (lambda x: x),
             key="r_rc",
         )
 
         with st.form("add_rel"):
-            rname = st.text_input("Relationship name", f"{lt}_to_{rt}".lower()).strip()
-            rtype = st.selectbox("Type", ["many_to_one", "one_to_one"])
+            rname = st.text_input("Name for this relationship", f"{lt}_to_{rt}".lower()).strip()
+            rtype = st.selectbox("Type", ["many_to_one", "one_to_one"],
+                                 help="many_to_one is by far the most common")
             if st.form_submit_button("Add relationship") and rname:
                 if lt == rt:
                     st.error("Left and right tables must differ.")
@@ -834,7 +1072,7 @@ with tabs[4]:
 
 
 # ---------------- TAB 6: REVIEW & SUBMIT ----------------
-with tabs[5]:
+with tabs[6]:
     st.subheader("Review and submit")
 
     y1, y2, y3, y4, y5 = (len(bt), len(bd), len(bf), len(bm), len(br))
