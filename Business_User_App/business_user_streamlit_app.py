@@ -162,6 +162,88 @@ def suggest_primary_key(db, schema, table, columns):
     return []
 
 
+METRIC_GEN_MODEL = "claude-sonnet-4-6"
+
+
+def _strip_wrapping(s):
+    """Remove wrapping quotes/backticks the model may add despite being
+    told not to -- LLMs often quote code-like output out of habit even
+    when explicitly instructed not to.
+    """
+    s = s.strip().strip("`").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    return s
+
+
+def generate_metric_name_and_expression(table_alias, facts_df, description):
+    """Ask AI_COMPLETE for both a metric name and expression from a
+    plain-language description, grounded in the exact fact names already
+    declared for this table -- never asked to guess names, only to
+    combine ones we hand it. The same rules enforced elsewhere in this
+    build (no AGG(), reference tables by their short name, standard SQL
+    aggregates only) are stated explicitly, since AI_COMPLETE has no
+    built-in awareness of semantic-view syntax the way Cortex Analyst
+    does -- it only knows what this prompt tells it.
+
+    Returns (name, expression, raw_response). Parsing tolerates the model
+    not matching the requested format exactly and strips any wrapping
+    quotes/backticks from each piece independently. raw_response is
+    returned too so the caller can show it if parsing comes back empty.
+    """
+    facts_here = facts_df[facts_df["TABLE_ALIAS"] == table_alias]
+    fact_list = "\n".join(f"- {r['FACT_NAME']}" for _, r in facts_here.iterrows())
+
+    prompt = f"""You write a metric name and SQL expression for a semantic view.
+
+Table name: {table_alias}
+Available facts on this table (use these exact names, nothing else):
+{fact_list}
+
+Rules:
+- Reference facts as {table_alias}.fact_name
+- Use only standard SQL aggregates: SUM, AVG, COUNT, COUNT DISTINCT, MIN, MAX
+- Never use AGG()
+- The name must be short, snake_case, no spaces
+- Respond in exactly this format, nothing else -- no quotes, no markdown, no explanation:
+NAME: <snake_case_name>
+EXPR: <sql expression>
+
+Examples:
+"total revenue" ->
+NAME: total_revenue
+EXPR: SUM({table_alias}.line_total_fact)
+
+"average order value" ->
+NAME: average_order_value
+EXPR: SUM({table_alias}.line_total_fact) / COUNT(DISTINCT {table_alias}.order_id_fact)
+
+Request: "{description}" """
+
+    result = session.sql(
+        "SELECT AI_COMPLETE(?, ?)", params=[METRIC_GEN_MODEL, prompt]
+    ).collect()
+    raw = result[0][0] if result else ""
+
+    # The model sometimes wraps its whole structured response in quotes and
+    # escapes internal newlines as the literal two characters \ and n --
+    # as if JSON-encoding a string -- rather than returning a real newline.
+    # Unwrap that before splitting into lines, but keep `raw` itself
+    # untouched so the diagnostic display, if needed, shows exactly what
+    # actually came back.
+    parseable = _strip_wrapping(raw).replace("\\n", "\n").replace("\\r", "\r")
+
+    name_v, expr_v = "", ""
+    for line in parseable.splitlines():
+        line = line.strip()
+        if line.upper().startswith("NAME:"):
+            name_v = line.split(":", 1)[1]
+        elif line.upper().startswith("EXPR:"):
+            expr_v = line.split(":", 1)[1]
+
+    return _strip_wrapping(name_v), _strip_wrapping(expr_v), raw
+
+
 def suggest_relationships(bt_df):
     """Auto-suggest relationships between already-added tables.
 
@@ -901,6 +983,59 @@ with tabs[4]:
         m_rev = st.session_state.get(f"metric_rev_{active_pid}_{sel_m}", 0)
         mkey = lambda field: f"m_{field}_{sel_m}_{m_rev}"
 
+        gen_col1, gen_col2 = st.columns([4, 1])
+        describe_text = gen_col1.text_input(
+            "Describe what you want",
+            placeholder="e.g. average price per unit",
+            help="Plain language -- click Generate to turn this into a SQL expression below",
+            key=mkey("describe")
+        )
+
+        # "Regenerate" only when the text is genuinely unchanged since the
+        # last successful generation -- editing the description (a new
+        # ask) should read as Generate again, not Regenerate the old ask.
+        last_gen_key = f"m_last_gen_{sel_m}_{m_rev}"
+        last_gen_input = st.session_state.get(last_gen_key)
+        is_regenerate = bool(describe_text.strip()) and describe_text == last_gen_input
+        btn_label = "Regenerate" if is_regenerate else "Generate SQL"
+
+        with gen_col2:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            clicked = st.button(btn_label, key=mkey("gen_btn"))
+
+        # Outside the narrow column so any message is actually visible,
+        # not cramped into a 1/5-width sliver.
+        if clicked:
+            if not describe_text.strip():
+                st.warning("Describe what you want first.")
+            elif bf.empty:
+                st.warning("Add at least one fact for this table first.")
+            else:
+                try:
+                    gen_name, gen_expr, raw = generate_metric_name_and_expression(
+                        sel_m, bf, describe_text
+                    )
+                    if not gen_expr:
+                        st.warning(
+                            "Couldn't parse a usable expression from the "
+                            "response. Raw output below -- paste it into "
+                            "Custom formula yourself for now."
+                        )
+                        st.code(raw or "(empty response)")
+                    else:
+                        # Set BEFORE the rerun -- on the fresh run that
+                        # follows, the form's fields (not yet instantiated
+                        # this run) pick these up as their value, and the
+                        # button label re-evaluates against the now-updated
+                        # last_gen_key too.
+                        st.session_state[mkey("custom")] = gen_expr
+                        if gen_name:
+                            st.session_state[mkey("name")] = gen_name
+                        st.session_state[last_gen_key] = describe_text
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Couldn't generate a suggestion: {e}")
+
         with st.form("add_metric"):
             mname = st.text_input(
                 "Name for this metric",
@@ -923,8 +1058,10 @@ with tabs[4]:
                 key=mkey("custom")
             )
             mdesc = st.text_area("Description", key=mkey("desc"))
-            if st.form_submit_button("Add metric") and mname:
-                if not custom and not (agg and tgt):
+            if st.form_submit_button("Add metric"):
+                if not mname:
+                    st.error("Name for this metric can't be empty.")
+                elif not custom and not (agg and tgt):
                     st.error("Pick both how to combine and which number, or enter a custom formula.")
                 else:
                     if start_new_version_if_needed():
