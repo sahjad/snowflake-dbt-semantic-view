@@ -8,7 +8,6 @@ tables:
     database: TASTY_BYTES_DB
     schema: DEV
     table: FCT_ORDER_DETAIL
-  description: Individual line items -- one row per product sold
   primary_key:
     columns:
     - ORDER_DETAIL_ID
@@ -34,7 +33,6 @@ tables:
     database: TASTY_BYTES_DB
     schema: DEV
     table: DIM_CUSTOMER_LOYALTY
-  description: Loyalty programme members
   primary_key:
     columns:
     - CUSTOMER_ID
@@ -52,13 +50,12 @@ tables:
     expr: FAVOURITE_BRAND
     data_type: VARCHAR(16777216)
     synonyms:
-    - preferred brand
+    - preferred
 - name: LOCATIONS
   base_table:
     database: TASTY_BYTES_DB
     schema: DEV
     table: DIM_LOCATION
-  description: Where the order was placed
   primary_key:
     columns:
     - LOCATION_ID
@@ -75,13 +72,6 @@ tables:
     synonyms:
     - territory
 relationships:
-- name: order_items_to_locations
-  left_table: ORDER_ITEMS
-  right_table: LOCATIONS
-  relationship_columns:
-  - left_column: LOCATION_ID
-    right_column: LOCATION_ID
-  relationship_type: many_to_one
 - name: order_items_to_customers
   left_table: ORDER_ITEMS
   right_table: CUSTOMERS
@@ -89,7 +79,10 @@ relationships:
   - left_column: CUSTOMER_ID
     right_column: CUSTOMER_ID
   relationship_type: many_to_one
-verified_queries:
-  - name: spend_by_order_city
-    question: "What is our total loyalty spend by city?"
-    sql: "SELECT LOCATIONS.order_city, SUM(ORDER_ITEMS.line_total_fact) AS total_spend FROM ORDER_ITEMS JOIN LOCATIONS ON ORDER_ITEMS.location_id = LOCATIONS.location_id GROUP BY LOCATIONS.order_city ORDER BY total_spend DESC"
+- name: order_items_to_locations
+  left_table: ORDER_ITEMS
+  right_table: LOCATIONS
+  relationship_columns:
+  - left_column: LOCATION_ID
+    right_column: LOCATION_ID
+  relationship_type: many_to_one
