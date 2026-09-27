@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import uuid
 import re
+import yaml
 from snowflake.snowpark.context import get_active_session
 
 session = get_active_session()
@@ -293,6 +294,103 @@ def bump_version(pid, yaml_text, user, note=""):
     return new_num
 
 
+VQ_GEN_MODEL = "claude-sonnet-4-6"
+
+
+def _strip_wrapping(s):
+    """Remove wrapping quotes/backticks the model may add despite being
+    told not to -- confirmed necessary behavior, not a hypothetical: the
+    business user app hit exactly this with metric generation.
+    """
+    s = (s or "").strip().strip("`").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    return s
+
+
+def describe_yaml_schema(yaml_text):
+    """Turn the actual YAML being reviewed into a compact schema summary
+    for the generation prompt -- reflects whatever's currently on screen,
+    including any unsaved inline edits, not just what's stored in the
+    database. Returns "" if the YAML doesn't parse (e.g. mid-edit).
+    """
+    try:
+        spec = yaml.safe_load(yaml_text) or {}
+    except Exception:
+        return ""
+
+    lines = []
+    for t in spec.get("tables", []):
+        tname = t.get("name", "?")
+        lines.append(f"Table: {tname}")
+        for f in t.get("facts", []) or []:
+            lines.append(f"  fact: {f.get('name')}")
+        for d in t.get("dimensions", []) or []:
+            lines.append(f"  dimension: {d.get('name')}")
+        for m in t.get("metrics", []) or []:
+            lines.append(f"  metric: {m.get('name')}")
+
+    for r in spec.get("relationships", []) or []:
+        cols = r.get("relationship_columns", [{}])[0]
+        lines.append(
+            f"Relationship: {r.get('left_table')}.{cols.get('left_column')} "
+            f"-> {r.get('right_table')}.{cols.get('right_column')}"
+        )
+    return "\n".join(lines)
+
+
+def generate_verified_query(yaml_text, question):
+    """Ask AI_COMPLETE for a verified-query name and SQL from a plain
+    question, grounded in the actual tables/facts/dimensions/relationships
+    parsed from the YAML under review. States the same three rules
+    enforced everywhere else in this build (logical tables not the view
+    name, declared names not raw columns, no AGG()) explicitly, since
+    AI_COMPLETE has no built-in awareness of semantic-view syntax --
+    it only knows what this prompt tells it.
+
+    Returns (name, sql, raw_response, schema_context) so the caller can
+    show the raw response and/or the extracted schema if something
+    doesn't come back parseable, rather than fail silently.
+    """
+    schema = describe_yaml_schema(yaml_text)
+    if not schema:
+        return "", "", "", ""
+
+    prompt = f"""You write a name and SQL for a verified query in a Snowflake semantic view.
+
+Schema:
+{schema}
+
+Rules:
+- Reference tables and columns ONLY by the exact names shown above
+- Never reference the semantic view's own name -- only the logical tables
+- Use only standard SQL aggregates: SUM, AVG, COUNT, COUNT DISTINCT, MIN, MAX
+- Never use AGG()
+- The name must be short, snake_case, no spaces
+- Respond in exactly this format, nothing else -- no quotes, no markdown, no explanation:
+NAME: <snake_case_name>
+SQL: <the full SELECT statement, one line>
+
+Question: "{question}"
+"""
+
+    result = session.sql(
+        "SELECT AI_COMPLETE(?, ?)", params=[VQ_GEN_MODEL, prompt]
+    ).collect()
+    raw = result[0][0] if result else ""
+
+    parseable = _strip_wrapping(raw).replace("\\n", "\n").replace("\\r", "\r")
+    name_v, sql_v = "", ""
+    for line in parseable.splitlines():
+        line = line.strip()
+        if line.upper().startswith("NAME:"):
+            name_v = line.split(":", 1)[1]
+        elif line.upper().startswith("SQL:"):
+            sql_v = line.split(":", 1)[1]
+
+    return _strip_wrapping(name_v), _strip_wrapping(sql_v), raw, schema
+
+
 user = current_user()
 st.sidebar.title("Semantic View Review")
 st.sidebar.caption(f"Engineer: `{user}`")
@@ -481,9 +579,45 @@ if page.startswith("Review queue"):
         vqs = df(f"""SELECT * FROM {TOOL_PATH}.svt_builder_verified_queries
                      WHERE proposal_id = '{esc(pid)}' ORDER BY created_at""")
 
-        with st.form(f"add_vq_{pid}"):
-            vq_name = st.text_input("Name (identifier)").strip()
-            vq_q = st.text_input("Question a user would ask")
+        vq_rev = st.session_state.get(f"vqrev_{pid}", 0)
+        vqkey = lambda field: f"vq_{field}_{pid}_{vq_rev}"
+
+        gc1, gc2 = st.columns([4, 1])
+        vq_q = gc1.text_input("Question a user would ask", key=vqkey("q"))
+        with gc2:
+            st.markdown("<div style='height:23px'></div>", unsafe_allow_html=True)
+            gen_clicked = st.button("Generate SQL", key=vqkey("gen_btn"))
+
+        if gen_clicked:
+            if not vq_q.strip():
+                st.warning("Type a question first.")
+            else:
+                try:
+                    gen_name, gen_sql, raw, schema_used = generate_verified_query(edited, vq_q)
+                    if not schema_used:
+                        st.error(
+                            "Couldn't read the schema from the YAML above -- "
+                            "fix any YAML errors first, then try again."
+                        )
+                    elif not gen_sql:
+                        st.warning(
+                            "Couldn't parse a usable query from the response. "
+                            "Raw output below -- paste it into SQL yourself for now."
+                        )
+                        st.code(raw or "(empty response)")
+                    else:
+                        # Set BEFORE the rerun -- on the fresh run that follows,
+                        # the form's fields (not yet instantiated this run)
+                        # pick these up as their value.
+                        st.session_state[vqkey("sql")] = gen_sql
+                        if gen_name:
+                            st.session_state[vqkey("name")] = gen_name
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Couldn't generate a suggestion: {e}")
+
+        with st.form(f"add_vq_{pid}_{vq_rev}"):
+            vq_name = st.text_input("Name (identifier)", key=vqkey("name")).strip()
             vq_sql = st.text_area(
                 "SQL",
                 placeholder=(
@@ -494,25 +628,34 @@ if page.startswith("Review queue"):
                     "GROUP BY dim_menu.truck_brand_name"
                 ),
                 height=150,
+                key=vqkey("sql"),
             )
-            if st.form_submit_button("Add verified query") and vq_name and vq_q and vq_sql:
-                bad = []
-                if "AGG(" in vq_sql.upper():
-                    bad.append("Uses AGG() -- not valid in verified queries.")
-                if row["VIEW_NAME"].upper() in vq_sql.upper():
-                    bad.append(
-                        f"References the semantic view name ({row['VIEW_NAME']}). "
-                        "Reference the logical tables instead."
-                    )
-                if bad:
-                    for b_ in bad:
-                        st.error(b_)
+            if st.form_submit_button("Add verified query"):
+                if not vq_name:
+                    st.error("Name can't be empty.")
+                elif not vq_q.strip():
+                    st.error("Question can't be empty.")
+                elif not vq_sql.strip():
+                    st.error("SQL can't be empty.")
                 else:
-                    run(f"""INSERT INTO {TOOL_PATH}.svt_builder_verified_queries
-                            (item_id, proposal_id, query_name, question, sql_text)
-                            VALUES ('{new_id()}', '{esc(pid)}', '{esc(vq_name)}',
-                                    '{esc(vq_q)}', '{esc(vq_sql)}')""")
-                    st.rerun()
+                    bad = []
+                    if "AGG(" in vq_sql.upper():
+                        bad.append("Uses AGG() -- not valid in verified queries.")
+                    if row["VIEW_NAME"].upper() in vq_sql.upper():
+                        bad.append(
+                            f"References the semantic view name ({row['VIEW_NAME']}). "
+                            "Reference the logical tables instead."
+                        )
+                    if bad:
+                        for b_ in bad:
+                            st.error(b_)
+                    else:
+                        run(f"""INSERT INTO {TOOL_PATH}.svt_builder_verified_queries
+                                (item_id, proposal_id, query_name, question, sql_text)
+                                VALUES ('{new_id()}', '{esc(pid)}', '{esc(vq_name)}',
+                                        '{esc(vq_q)}', '{esc(vq_sql)}')""")
+                        st.session_state[f"vqrev_{pid}"] = vq_rev + 1
+                        st.rerun()
 
         st.write("**Added verified queries**")
         if vqs.empty:

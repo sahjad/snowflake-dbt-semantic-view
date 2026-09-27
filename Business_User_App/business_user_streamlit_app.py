@@ -1000,7 +1000,7 @@ with tabs[4]:
         btn_label = "Regenerate" if is_regenerate else "Generate SQL"
 
         with gen_col2:
-            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:23px'></div>", unsafe_allow_html=True)
             clicked = st.button(btn_label, key=mkey("gen_btn"))
 
         # Outside the narrow column so any message is actually visible,
@@ -1043,14 +1043,14 @@ with tabs[4]:
                 key=mkey("name")
             ).strip()
             agg = st.selectbox(
-                "How to combine the numbers",
+                "Which aggregation method to use",
                 ["— Select —", "SUM", "AVG", "COUNT", "COUNT DISTINCT", "MIN", "MAX"],
                 help="SUM adds them all up, AVG takes the average, COUNT counts rows",
                 key=mkey("agg")
             )
             agg = None if agg == "— Select —" else agg
             tgt_options = ["— Select —"] + avail
-            tgt = st.selectbox("Which number to use", tgt_options, key=mkey("tgt")) if avail else None
+            tgt = st.selectbox("Which fact to use", tgt_options, key=mkey("tgt")) if avail else None
             tgt = None if tgt == "— Select —" else tgt
             custom = st.text_input(
                 "Custom formula (optional — overrides the above)",
