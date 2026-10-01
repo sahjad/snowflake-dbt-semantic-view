@@ -425,7 +425,7 @@ forced_mode = st.session_state.pop("force_mode_next_run", None)
 if forced_mode:
     st.session_state["mode_radio"] = forced_mode
 
-mode_options = ["My proposals", "Start a new view", "Change a live view"]
+mode_options = ["My proposals", "Start a new view"]  # "Change a live view" removed for now -- add back to re-enable
 mode = st.sidebar.radio("Mode", mode_options, index=0, key="mode_radio")
 
 active_pid = None
@@ -1062,7 +1062,7 @@ with tabs[4]:
                 if not mname:
                     st.error("Name for this metric can't be empty.")
                 elif not custom and not (agg and tgt):
-                    st.error("Pick both how to combine and which number, or enter a custom formula.")
+                    st.error("Pick both the aggregation method and which fact to use, or enter a custom formula.")
                 else:
                     if start_new_version_if_needed():
                         st.info("Created a new version for this change.")

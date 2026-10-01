@@ -407,9 +407,9 @@ counts = df(f"""
               OR deployed_prod_version IS NOT NULL, 1, 0)) AS d
     FROM {TOOL_PATH}.svt_proposals
 """)
-n_queue = int(counts["Q"][0] or 0)
-n_val = int(counts["V"][0] or 0)
-n_dep = int(counts["D"][0] or 0)
+n_queue = int(counts["Q"][0]) if pd.notna(counts["Q"][0]) else 0
+n_val = int(counts["V"][0]) if pd.notna(counts["V"][0]) else 0
+n_dep = int(counts["D"][0]) if pd.notna(counts["D"][0]) else 0
 
 page = st.sidebar.radio(
     "View",
