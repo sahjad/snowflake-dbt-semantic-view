@@ -11,7 +11,7 @@ entities:
       database: LINEAGE_APP_DB
       schema: APPS
       name: SNOWFLAKE_LINEAGE_EXPLORER
-    title: snowflake_lineage_explorer
+    title: Snowflake Lineage Explorer
     query_warehouse: LINEAGE_APP_WH
     compute_pool: SYSTEM_COMPUTE_POOL_CPU
     run_mode: SpcsOnly
