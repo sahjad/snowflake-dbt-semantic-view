@@ -1,0 +1,15 @@
+{
+  "name": "snowflake-lineage-cytoscape-component",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --target=es2020 --minify --outfile=../dist/cytoscape_component.js"
+  },
+  "dependencies": {
+    "cytoscape": "3.33.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

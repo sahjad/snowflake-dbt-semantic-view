@@ -1,0 +1,9 @@
+[project]
+name = "snowflake-lineage-explorer"
+version = "1.1.0"
+description = "Snowflake technical lineage and semantic-view explorer"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "streamlit[snowflake]==1.64.0",
+  "pandas>=2.0.0,<3.0.0",
+]
