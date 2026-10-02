@@ -12,7 +12,7 @@ entities:
       schema: SEMANTIC_TOOL
       name: DATA_ENGINEER_APP
     title: Data Engineer App
-    query_warehouse: COMPUTE_WH
+    query_warehouse: TASTY_BYTES_WH
     compute_pool: SYSTEM_COMPUTE_POOL_CPU
     run_mode: SpcsOnly
     execute_as: OWNER

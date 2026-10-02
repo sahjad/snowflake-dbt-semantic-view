@@ -1,13 +1,99 @@
 version: 2
 
+# Source-level tests. These run against raw.* directly, before Silver/Gold
+# ever touch the data -- the earliest possible point to catch a bad load
+# (a duplicate ID, a null that shouldn't be null) before it propagates
+# downstream into the semantic views and the Cortex Agent.
+#
+# Note: dbt renamed `tests:` to `data_tests:` starting in dbt-core 1.8.
+# `tests:` still works as of this writing, but if the new account's dbt
+# version warns about it or stops accepting it, rename every `tests:` key
+# below (and in models/gold/schema.yml) to `data_tests:` -- nothing else
+# needs to change.
+
 sources:
   - name: tasty_bytes_raw
     database: TASTY_BYTES_DB
     schema: raw
     tables:
       - name: order_header
+        columns:
+          - name: order_id
+            tests:
+              - unique
+              - not_null
+          - name: truck_id
+            tests:
+              - not_null
+          # customer_id deliberately has NO not_null test. Confirmed against
+          # live data: 234.8M of 248.2M rows (94.6%) have a null customer_id.
+          # An earlier version of this file had a not_null test here -- that
+          # was a mistake, not a real data problem. This is a loyalty
+          # program: most orders are guests with no loyalty account, and a
+          # null customer_id means exactly that, not bad data. The project's
+          # own verified query (orders_loyalty_vs_nonmember, in
+          # tasty_bytes_semantic_view.sql) already encodes this same
+          # assumption -- a null customer relationship means "Non-Member."
+
       - name: order_detail
+        columns:
+          - name: order_detail_id
+            tests:
+              - unique
+              - not_null
+          - name: order_id
+            tests:
+              - not_null
+          - name: menu_item_id
+            tests:
+              - not_null
+
       - name: menu
+        columns:
+          - name: menu_item_id
+            tests:
+              - unique
+              - not_null
+
       - name: truck
+        columns:
+          - name: truck_id
+            tests:
+              - unique
+              - not_null
+
       - name: location
+        columns:
+          - name: location_id
+            tests:
+              - unique
+              - not_null
+
       - name: customer_loyalty
+        columns:
+          - name: customer_id
+            tests:
+              - unique
+              - not_null
+
+      # NEW -- loaded into raw by Step1: Ingestion.sql from day one, but never
+      # referenced anywhere downstream until now. dim_truck.franchise_id has
+      # been pointing at nothing until this source entry + stg_franchise +
+      # dim_franchise exist.
+      - name: franchise
+        columns:
+          - name: franchise_id
+            tests:
+              - not_null
+              # Confirmed against live data: 10 franchise_id values have two
+              # rows each -- same person (identical first_name/last_name/
+              # e_mail/phone_number), different city on each row (e.g.
+              # franchise_id 37 = Mary Sanders, one row for Seattle, one for
+              # Boston). Looks like a franchisee operating out of more than
+              # one home-base city, not a load error. stg_franchise.sql picks
+              # one row deterministically. Kept as `warn` here (not the
+              # default hard failure) specifically so this known source
+              # quirk stays visible on every run without blocking the build.
+              - unique:
+                  config:
+                    severity: warn

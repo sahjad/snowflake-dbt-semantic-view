@@ -250,3 +250,10 @@ SELECT table_name, comment
 FROM TASTY_BYTES_DB.INFORMATION_SCHEMA.TABLES
 WHERE table_schema = 'SEMANTIC_TOOL'
 ORDER BY table_name;
+
+
+-- Add permissions for the App
+GRANT WRITE ON WORKSPACE "USER$SAHJAD".PUBLIC."snowflake-dbt-semantic-view" TO ROLE ACCOUNTADMIN;
+
+CREATE DBT PROJECT TASTY_BYTES_DB.SEMANTIC_TOOL.tasty_bytes_dbt_deploy
+FROM 'snow://workspace/"USER$SAHJAD".PUBLIC."snowflake-dbt-semantic-view"/versions/live/DBT_SEMANTIC_POC/tasty_bytes_dbt';
