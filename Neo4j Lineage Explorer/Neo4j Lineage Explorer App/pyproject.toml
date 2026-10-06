@@ -1,0 +1,11 @@
+[project]
+name = "streamlit-app"
+requires-python = ">= 3.11"
+version = "0.0.1"
+description = "Tasty Bytes Graph Explorer"
+dependencies = [
+    "streamlit[snowflake]>=1.54.0"
+]
+
+[tool.uv]
+constraint-dependencies = ["numba>=0.56.0"]

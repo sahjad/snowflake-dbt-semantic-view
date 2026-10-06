@@ -1,0 +1,23 @@
+definition_version: 2
+entities:
+  streamlit_app:
+    type: streamlit
+    query_warehouse: NEO4J_LINEAGE_WH
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    main_file: streamlit_app.py
+    artifacts:
+      - pyproject.toml
+      - streamlit_app.py
+      - nvl_template.html
+      - static/
+      - .streamlit/config.toml
+    identifier:
+      database: NEO4J_LINEAGE_DB
+      schema: PUBLIC
+      name: NEO4J_LINEAGE_EXPLORER
+    title: Neo4j Lineage Explorer
+    run_mode: SpcsOnly
+    execute_as: OWNER
+    sharing:
+      - role: NEO4J_LINEAGE_ROLE
+        with_grant_option: true
